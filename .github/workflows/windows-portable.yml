@@ -91,7 +91,7 @@ jobs:
             for ($offset = 0; $offset -lt $message.Length; $offset += 3000) {
               $chunk = $message.Substring($offset, [Math]::Min(3000, $message.Length - $offset))
               $chunk = $chunk.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-              Write-Output "::error title=Clippy diagnostics $offset::$chunk"
+              Write-Output "::error title=Clippy diagnostics ${offset}::$chunk"
             }
           }
           exit $code
