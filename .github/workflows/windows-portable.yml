@@ -60,6 +60,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: windows-portable-static-crt
+          cache-on-failure: true
+          cache-all-crates: true
 
       - name: Validate packaging PowerShell syntax with the native parser
         run: |
@@ -84,10 +86,13 @@ jobs:
           & cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | Tee-Object -Variable diagnostics
           $code = $LASTEXITCODE
           if ($code -ne 0) {
-            $message = ($diagnostics | Select-Object -Last 160 | Out-String)
-            if ($message.Length -gt 60000) { $message = $message.Substring($message.Length - 60000) }
-            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error title=Clippy diagnostics::$message"
+            $message = ($diagnostics | Select-Object -Last 200 | Out-String)
+            # GitHub truncates each annotation at 4096 characters; emit small chunks.
+            for ($offset = 0; $offset -lt $message.Length; $offset += 3000) {
+              $chunk = $message.Substring($offset, [Math]::Min(3000, $message.Length - $offset))
+              $chunk = $chunk.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Clippy diagnostics $offset::$chunk"
+            }
           }
           exit $code
       - name: Workspace tests (including UI regressions and portable mode)
