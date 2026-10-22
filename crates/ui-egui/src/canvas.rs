@@ -657,6 +657,13 @@ pub enum ViewAction {
 }
 
 impl DocView {
+    /// Cancel only this canvas's drag when its document loses input ownership.
+    pub(super) fn cancel_canvas_drag(&self, ctx: &egui::Context) {
+        if self.page_widget.is_some_and(|id| ctx.is_being_dragged(id)) {
+            ctx.stop_dragging();
+        }
+    }
+
     pub fn raster_memory(&self) -> RasterMemory {
         RasterMemory {
             thumbnail_count: self.thumbs.len(),
@@ -2654,8 +2661,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
 
     // A modal or lost window focus terminates the page drag, not a dialog's own drag. It
     // must not resume later with a pointer delta accumulated over printer preferences.
-    if (!unobstructed || !navigation_enabled) && view.page_widget.is_some_and(|id| ui.ctx().is_being_dragged(id)) {
-        ui.ctx().stop_dragging();
+    if !unobstructed || !navigation_enabled {
+        view.cancel_canvas_drag(ui.ctx());
     }
     let mut scroll = egui::ScrollArea::both().auto_shrink([false, false]).scroll_source(egui::scroll_area::ScrollSource {
         drag: if middle_gesture || !unobstructed || !navigation_enabled {
@@ -5326,6 +5333,21 @@ fn grayscale(mut img: egui::ColorImage) -> egui::ColorImage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cancelling_canvas_drag_preserves_other_widgets_drag() {
+        let mut v = view(1, PageLayout::Single, true);
+        let ctx = egui::Context::default();
+        let canvas = egui::Id::new("canvas-drag");
+        let dialog = egui::Id::new("dialog-drag");
+        v.page_widget = Some(canvas);
+        ctx.set_dragged_id(dialog);
+        v.cancel_canvas_drag(&ctx);
+        assert!(ctx.is_being_dragged(dialog));
+        ctx.set_dragged_id(canvas);
+        v.cancel_canvas_drag(&ctx);
+        assert!(!ctx.is_being_dragged(canvas));
+    }
+
     #[test]
     fn zoom_anchor_scroll_stays_within_the_content() {
         let (content, viewport) = (vec2(1000.0, 2000.0), vec2(800.0, 600.0));

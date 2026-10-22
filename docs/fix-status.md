@@ -202,3 +202,14 @@ At the user's explicit request on 2026-10-22, the accumulated changes are being 
 and pushed for a draft PR. Earlier no-commit/no-push statements describe the prior setup
 review. Full application checks and Windows runtime verification remain outstanding; consult
 the PR checks/Actions for the current build status. No new executable is certified by this submission.
+
+### Windows CI follow-up — 2026-10-22
+
+The Windows rerun reached application compilation and reported E0616: `lib.rs` accessed
+private `DocView::page_widget` during drag cancellation. Cancellation now goes through
+`DocView::cancel_canvas_drag`, keeping widget identity private and preserving other widgets'
+drags. Added a canvas regression covering owned versus unrelated drag cancellation.
+
+Cargo gate failures now emit chunked check annotations (GitHub truncates single annotations
+at 4096 characters); failed builds retain their cache. All original gates remain blocking.
+These changes are pushed for Windows CI verification, not a claim of a successful build.

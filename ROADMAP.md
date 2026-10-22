@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** minor (Windows CI exposed private canvas-field access, E0616; routed cancellation through a canvas method and added an ownership regression. Diagnostic annotations and failed-build caching improved; full Windows rerun pending, no executable certified; milestone estimates unchanged.)
+
 > **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** minor (M14 distribution: standalone Windows x64 portable-preview workflow and portable-only packaging added; restricted upstream trademark artwork removed for fork distribution. Formatting and 20 policy tests pass; full checks remain blocked by registry access. Not committed, built or published; estimates unchanged. [Build status](docs/portable-windows-build.md).)
 
 > **Last reviewed:** 2026-10-21 · **Last updated:** 2026-10-21 · **Change:** minor (Reviewed all seven repair prompts for smoothness: shared proposed responsiveness/resource targets, bounded async work and result ownership; removed duplicate Hand/printer acceptance and unplanned rewrite scope. Documentation-only refinement, no runtime improvement or completion claimed; estimates unchanged. [Contract](docs/repair-smoothness-contract.md).)

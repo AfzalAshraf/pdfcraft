@@ -67,42 +67,31 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            "$env:GITHUB_WORKSPACE/packaging/windows/package.ps1",
-            [ref]$tokens, [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          foreach ($file in @('packaging/windows/package.ps1', '.github/scripts/check-cargo.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              "$env:GITHUB_WORKSPACE/$file", [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          }
 
       # Separate steps ensure a failed native command cannot be hidden by a later success.
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        env:
-          CARGO_TERM_COLOR: never
         run: |
-          # Preserve the real exit code and expose diagnostics through GitHub's checks API.
-          # Downloadable Actions logs can be inaccessible outside the runner's network.
-          $PSNativeCommandUseErrorActionPreference = $false
-          & cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | Tee-Object -Variable diagnostics
-          $code = $LASTEXITCODE
-          if ($code -ne 0) {
-            $message = ($diagnostics | Select-Object -Last 200 | Out-String)
-            # GitHub truncates each annotation at 4096 characters; emit small chunks.
-            for ($offset = 0; $offset -lt $message.Length; $offset += 3000) {
-              $chunk = $message.Substring($offset, [Math]::Min(3000, $message.Length - $offset))
-              $chunk = $chunk.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-              Write-Output "::error title=Clippy diagnostics ${offset}::$chunk"
-            }
-          }
-          exit $code
+          & ./.github/scripts/check-cargo.ps1 -Label Clippy -CargoArguments @('clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings')
       - name: Workspace tests (including UI regressions and portable mode)
-        run: cargo test --locked --workspace
+        run: |
+          & ./.github/scripts/check-cargo.ps1 -Label Tests -CargoArguments @('test', '--locked', '--workspace')
       - name: Layer boundaries
-        run: cargo xtask layers
+        run: |
+          & ./.github/scripts/check-cargo.ps1 -Label Layers -CargoArguments @('xtask', 'layers')
       - name: Asset policy
-        run: cargo xtask assets
+        run: |
+          & ./.github/scripts/check-cargo.ps1 -Label Assets -CargoArguments @('xtask', 'assets')
       - name: Web compatibility
-        run: cargo xtask wasm
+        run: |
+          & ./.github/scripts/check-cargo.ps1 -Label WASM -CargoArguments @('xtask', 'wasm')
 
       - name: Build portable ZIP (no installer, signing secrets or WiX required)
         run: |
