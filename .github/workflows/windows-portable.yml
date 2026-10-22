@@ -75,7 +75,21 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          # Preserve the real exit code and expose diagnostics through GitHub's checks API.
+          # Downloadable Actions logs can be inaccessible outside the runner's network.
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | Tee-Object -Variable diagnostics
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $message = ($diagnostics | Select-Object -Last 160 | Out-String)
+            if ($message.Length -gt 60000) { $message = $message.Substring($message.Length - 60000) }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Clippy diagnostics::$message"
+          }
+          exit $code
       - name: Workspace tests (including UI regressions and portable mode)
         run: cargo test --locked --workspace
       - name: Layer boundaries
