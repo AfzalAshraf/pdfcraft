@@ -1,14 +1,6 @@
-<p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
-</p>
-
-
 <h1 align="center">PdfCraft</h1>
+
+> **Modified fork:** the Windows portable preview workflow is described in [Portable Windows builds](docs/portable-windows-build.md). A new executable is not available until its build succeeds; upstream downloads do not contain uncommitted changes from this workspace.
 
 <p align="center">
   <b>The PDF workbench; an open-source, modern PDF reader and editor, built in pure Rust.</b><br>
@@ -75,7 +67,7 @@ PdfCraft is part of [ArtCraft](https://getartcraft.com). Come say hello, get hel
 - **Web page:** [getartcraft.com/apps/pdfcraft](https://getartcraft.com/apps/pdfcraft)
 - **Source:** [github.com/storytold/pdfcraft](https://github.com/storytold/pdfcraft)
 
-The ArtCraft name and logos in `docs/brand/` are trademarks of the ArtCraft Team and are not open source. They may be used only unmodified, and only as part of PdfCraft (see `docs/brand/LICENSE-brand.txt`). Forks and modified versions must remove them.
+Upstream ArtCraft trademark artwork is omitted from this modified fork. Its trademark terms are preserved in `docs/brand/LICENSE-brand.txt`; the contributor-original PdfCraft app icon remains under its open-source licence.
 
 ## Highlights
 
@@ -252,7 +244,7 @@ Press <kbd>⌘K</kbd> to search every tool and command, or browse the **All tool
 <table>
 <tr>
 <td width="50%"><img src="docs/images/pdfcraft-palette.png" alt="The command palette searching for 'page', listing Page grid, Page labels, Rotate pages, Insert pages, Delete pages, Extract pages and more, each with the tool it belongs to"></td>
-<td width="50%"><img src="docs/images/pdfcraft-tools.png" alt="The Welcome to PdfCraft home screen with recommended tools, a recent file, a privacy note, and the full tool catalogue in the side panel"></td>
+
 </tr>
 <tr>
 <td align="center"><sub>The <kbd>⌘K</kbd> command palette</sub></td>
@@ -579,14 +571,12 @@ with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md). Release
 the Japanese fonts of [craft-fonts](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md)
 (SIL Open Font License 1.1).
 
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and PdfCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
+The upstream ArtCraft trademark artwork has been removed from this modified fork. Trademark
+terms are preserved in [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt). Required
+copyright notices remain intact; this fork is not an official upstream release.
 
 <p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+  <sub>Based on the work of the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
 </p>
 
 Tools and Inspector panels can be dragged into tab groups, split beside the PDF, or floated within the app window. Read and full-screen modes keep their existing focused document view. Drag a panel header to a target edge or another header. Its context menu offers Float panel, Move to group, and Close panel. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.

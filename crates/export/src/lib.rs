@@ -492,9 +492,14 @@ fn docx_table(t: &Table) -> String {
     s.push_str("</w:tblGrid>");
     for row in &t.rows {
         s.push_str("<w:tr>");
+        let mut column = 0;
         for c in row {
             let span = if c.span > 1 { format!("<w:gridSpan w:val=\"{}\"/>", c.span) } else { String::new() };
-            let w: i64 = widths.iter().take(c.span.min(widths.len())).sum();
+            // Each cell starts after the preceding cells, including their spans.
+            // Taking from column zero gives every cell the first column's width.
+            let count = c.span.min(widths.len().saturating_sub(column));
+            let w: i64 = widths.iter().skip(column).take(count).sum();
+            column = column.saturating_add(count);
             s.push_str(&format!(
                 "<w:tc><w:tcPr><w:tcW w:w=\"{w}\" w:type=\"dxa\"/>{span}</w:tcPr><w:p>{}</w:p></w:tc>",
                 run_xml(&c.text, c.size, c.bold, c.italic, c.color)
@@ -1078,6 +1083,40 @@ mod tests {
         let xml = part(&docx(&[t.clone()], "Grid"), "word/document.xml");
         assert!(xml.contains("<w:color w:val=\"FF0000\"/>"), "{xml}");
         assert!(html(&[t], "Grid").contains("style=\"color:#FF0000\""));
+    }
+
+    #[test]
+    fn word_table_cells_use_their_own_grid_columns() {
+        let cell = |text: &str, span| Cell { text: text.into(), size: 11.0, bold: false, italic: false, color: [0.0; 3], span };
+        let table = Table {
+            rect: [0.0, 0.0, 350.0, 100.0],
+            cols: vec![0.0, 50.0, 150.0],
+            rows: vec![
+                vec![cell("A", 1), cell("B", 1), cell("C", 1)],
+                vec![cell("D", 1), cell("Merged", 2)],
+                vec![cell("Merged first", 2), cell("Last", 1)],
+            ],
+        };
+        let xml = docx_table(&table);
+        let widths: Vec<&str> = xml.split("<w:tcW w:w=\"").skip(1).filter_map(|tail| tail.split('"').next()).collect();
+        assert_eq!(widths, ["1000", "2000", "4000", "1000", "6000", "3000", "4000"], "{xml}");
+        assert!(xml.contains("<w:gridSpan w:val=\"2\"/>"));
+    }
+
+    #[test]
+    fn word_export_preserves_unequal_table_column_widths() {
+        let blocks = (0..3)
+            .flat_map(|row| {
+                [72.0, 172.0, 372.0].into_iter().enumerate().map(move |(col, x)| {
+                    let y = 700.0 - row as f64 * 20.0;
+                    block(&format!("R{row}C{col}"), x, y, x + 60.0, y + 12.0)
+                })
+            })
+            .collect();
+        let page = Page { width: 612.0, height: 792.0, blocks, images: Vec::new() };
+        let xml = part(&docx(&[page], "Unequal columns"), "word/document.xml");
+        let widths: Vec<&str> = xml.split("<w:tcW w:w=\"").skip(1).filter_map(|tail| tail.split('"').next()).collect();
+        assert_eq!(widths, ["2000", "4000", "1280"].repeat(3), "{xml}");
     }
 
     #[test]

@@ -5,7 +5,9 @@
 
 use egui::{Context, CursorIcon, Event, Key, PointerButton, Pos2, Stroke, Vec2, vec2};
 
-const DEAD_ZONE: f32 = 15.0;
+#[path = "autoscroll_gesture.rs"]
+mod gesture;
+use gesture::{DEAD_ZONE, MiddleGesture};
 // Chromium's autoscroll_controller.cc uses distance^2.2 * 0.000008; its
 // ui/events/gestures/fixed_velocity_curve.cc multiplies elapsed seconds by 5000.
 const SPEED_EXPONENT: f32 = 2.2;
@@ -17,6 +19,7 @@ const MAX_DISPLACEMENT: f32 = 1_000_000.0;
 pub(crate) struct AutoScroll {
     anchor: Option<Pos2>,
     organize: bool,
+    gesture: MiddleGesture,
     /// Own a cancelling click through its release, so it cannot also edit page content.
     cancel_button: Option<PointerButton>,
     block_input: bool,
@@ -36,6 +39,7 @@ impl AutoScroll {
 
     pub(crate) fn cancel(&mut self) {
         self.anchor = None;
+        self.gesture = MiddleGesture::default();
         self.drag = None;
         self.cancel_button = None;
         self.block_input = false;
@@ -102,10 +106,16 @@ impl AutoScroll {
                 && ctx.layer_id_at(pressed_at) == Some(ui.layer_id())
             {
                 self.anchor = Some(pressed_at);
+                self.gesture.start();
                 self.organize = organize;
             }
         }
         let (Some(anchor), Some(pointer)) = (self.anchor, pointer) else { return Vec2::ZERO };
+        if self.gesture.release_cancels(pointer.distance(anchor), middle_down, middle_released) {
+            self.cancel();
+            self.block_input = true; // The release still belongs to this gesture, not a page tool.
+            return Vec2::ZERO;
+        }
         let displacement = pointer.y - anchor.y;
         // Cap the elapsed time too: returning from an idle/hidden window must never jump pages.
         let delta = scroll_delta(displacement, dt);
@@ -261,15 +271,46 @@ mod tests {
 
     /// Run one frame of the non-Linux path; `check` sees the pan delta inside the frame.
     fn drag_frame(ctx: &Context, scroll: &mut AutoScroll, events: Vec<Event>, focused: bool, check: impl Fn(&AutoScroll, Vec2)) {
+        frame(ctx, scroll, events, focused, false, check);
+    }
+
+    fn frame(ctx: &Context, scroll: &mut AutoScroll, events: Vec<Event>, focused: bool, supported: bool, check: impl Fn(&AutoScroll, Vec2)) {
         let mut output = ctx.run_ui(
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0))), events, focused, ..Default::default() },
             |ui| {
-                let delta = scroll.update_for_platform(ui, ui.max_rect(), false, false);
+                let delta = scroll.update_for_platform(ui, ui.max_rect(), false, supported);
                 check(scroll, delta);
             },
         );
         // This input-only test has no renderer to apply the generated font texture.
         output.textures_delta.clear();
+    }
+
+    /// #3795: Linux hold-and-move scrolling ends on release; a simple click stays latched.
+    #[test]
+    fn auto_scroll_distinguishes_a_held_drag_from_a_click() {
+        let ctx = Context::default();
+        let mut scroll = AutoScroll::default();
+        let p = egui::pos2(100.0, 100.0);
+        frame(&ctx, &mut scroll, vec![], true, true, |_, _| {});
+        frame(&ctx, &mut scroll, vec![Event::PointerMoved(p), middle(p, true)], true, true, |s, _| assert!(s.active()));
+        frame(&ctx, &mut scroll, vec![Event::PointerMoved(p + vec2(0.0, 40.0))], true, true, |s, d| {
+            assert!(s.active() && d.y < 0.0);
+        });
+        frame(&ctx, &mut scroll, vec![middle(p + vec2(0.0, 40.0), false)], true, true, |s, d| {
+            assert!(!s.active(), "releasing a held drag must end scrolling");
+            assert_eq!(d, Vec2::ZERO);
+            assert!(s.blocks_input(), "the release must not reach the page tools");
+        });
+        frame(&ctx, &mut scroll, vec![Event::PointerMoved(p)], true, true, |s, d| {
+            assert!(!s.active() && !s.blocks_input());
+            assert_eq!(d, Vec2::ZERO);
+        });
+        frame(&ctx, &mut scroll, vec![middle(p, true)], true, true, |_, _| {});
+        frame(&ctx, &mut scroll, vec![middle(p, false)], true, true, |s, _| assert!(s.active()));
+        frame(&ctx, &mut scroll, vec![Event::PointerMoved(p + vec2(0.0, 40.0))], true, true, |s, d| {
+            assert!(s.active() && d.y < 0.0, "a click, unlike a held drag, stays latched");
+        });
     }
 
     #[test]

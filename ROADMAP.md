@@ -1,5 +1,15 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-22 · **Change:** minor (M14 distribution: standalone Windows x64 portable-preview workflow and portable-only packaging added; restricted upstream trademark artwork removed for fork distribution. Formatting and 20 policy tests pass; full checks remain blocked by registry access. Not committed, built or published; estimates unchanged. [Build status](docs/portable-windows-build.md).)
+
+> **Last reviewed:** 2026-10-21 · **Last updated:** 2026-10-21 · **Change:** minor (Reviewed all seven repair prompts for smoothness: shared proposed responsiveness/resource targets, bounded async work and result ownership; removed duplicate Hand/printer acceptance and unplanned rewrite scope. Documentation-only refinement, no runtime improvement or completion claimed; estimates unchanged. [Contract](docs/repair-smoothness-contract.md).)
+
+> **Last reviewed:** 2026-10-21 · **Last updated:** 2026-10-21 · **Change:** minor (Repair specifications 1–7 separated and indexed; added a rustc-only entry point for the existing 20 production-policy tests (pass, standalone Clippy clean) and an independent CI job. Full application tests still require verified registry dependencies; no from-scratch replacement, full offline build or milestone completion claimed. Estimates unchanged. [Prompt index](docs/repair-milestones.md).)
+
+> **Last reviewed:** 2026-10-21 · **Last updated:** 2026-10-21 · **Change:** minor (M3/M10 repair follow-up: Hand cursor ownership and drag cancellation; sticky, validated print destinations; fallible discovery worker with failure repaint. Sixteen production-policy tests and scoped Clippy pass; new UI/control tests blocked by registry access. Kyocera/Canon physical acceptance unresolved; both repair milestones remain incomplete and estimates unchanged. See [fix ledger](docs/fix-status.md).)
+
+> **Last reviewed:** 2026-10-21 · **Last updated:** 2026-10-21 · **Change:** minor (M3/M10/M14: #3795 held-scroll and #3818 Windows icon candidates; Word table widths pass isolated-source regressions. Rust toolchain recovered; formatting passes, normal workspace tests remain blocked by crates.io access. Full UI, Windows and printer validation pending; estimates unchanged. See [fix ledger](docs/fix-status.md).)
+
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
 > **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (M5, PR #1971: bounded nested FDF export excludes source page/page-tree dictionaries; refreshed against upstream 4db6ac4a; estimates unchanged)
@@ -171,6 +181,18 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
+
+- **2026-10-21 (prompt review):** Reviewed all seven repair prompts for smoothness: shared proposed responsiveness/resource targets, bounded async work and result ownership; removed duplicate Hand/printer acceptance and unplanned rewrite scope. Documentation-only refinement, no runtime improvement or completion claimed; estimates unchanged. [Contract](docs/repair-smoothness-contract.md).
+
+- **2026-10-21 (offline validation and prompt files):** Repair specifications 1–7 separated and indexed; added a rustc-only entry point for the existing 20 production-policy tests (pass, standalone Clippy clean) and an independent CI job. Full application tests still require verified registry dependencies; no from-scratch replacement, full offline build or milestone completion claimed. Estimates unchanged. [Details](docs/offline-validation.md).
+
+- **2026-10-21 (repair implementation):** M3/M10 repair follow-up: Hand cursor ownership and drag cancellation; sticky, validated print destinations; fallible discovery worker with failure repaint. Sixteen production-policy tests and scoped Clippy pass; new UI/control tests blocked by registry access. Kyocera/Canon physical acceptance unresolved; both repair milestones remain incomplete and estimates unchanged. [Evidence](docs/fix-status.md).
+
+- **2026-10-21 (verification follow-up):** M3/M10/M14: #3795 held-scroll and #3818 Windows icon candidates; Word table widths pass isolated-source regressions. Rust toolchain recovered; formatting passes, normal workspace tests remain blocked by crates.io access. Full UI, Windows and printer validation pending; estimates unchanged. [Per-issue evidence and remaining gates](docs/fix-status.md).
+
+- **2026-10-21:** M10 print-quality candidate: browser jobs retain 300 DPI regardless of length, respect renderer side/pixel limits and request exact colours; image printing preserves each source page size independently of raster caps. Regression tests added/updated but not run (Rust toolchain unavailable); physical output and Canon #3823 remain unverified. Estimates unchanged. See [print-quality.md](docs/print-quality.md).
+
+- **2026-10-21:** M10 / gap 8 candidate: Word table cell widths follow their actual grid columns, including merged cells and row resets. Added synthetic unit and DOCX-package regressions; Rust execution unavailable in this sandbox (no cargo/rustc). Independent arithmetic reproduction confirms the old defect; crate tests, formatting and Clippy remain pending. No milestone or estimate change.
 
 - **2026-10-19 (M14, #3373):** The main menu and its long submenus scroll in short windows, keeping their commands reachable. Estimates unchanged.
 
@@ -552,6 +574,7 @@ Newest first: the date, what moved, and the new overall estimate.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | M10 / gap 8 candidate: Word table cell widths follow their actual grid columns, including merged cells and row resets. Added synthetic unit and DOCX-package regressions; Rust execution unavailable in this sandbox (no cargo/rustc). Independent arithmetic reproduction confirms the old defect; crate tests, formatting and Clippy remain pending. No milestone or estimate change. |
 | 2026-10-18 | minor | M5, PR #1971: nested source `/Page` and `/Pages` dictionaries export as null without traversing page content or the page tree. Synthetic saved/reopened three-page regression retains unrelated metadata and aliases. FDF import semantics, copied-graph limits and estimates unchanged. |
 | 2026-10-15 | minor | M5: budget retained FDF entries before cloning; discovery keeps lazy array owners and annotation positions, with alias/cache-eviction stress fixtures. Limits cover the copied graph; source parsing/page discovery retain existing COS/parser limits, with no total source-memory bound. FDF import semantics and estimates unchanged. |
 | 2026-10-15 | minor | M7: the Edit text caret is as tall as the row it is on in a region with several sizes; estimates unchanged. |

@@ -25,23 +25,21 @@ pub(crate) fn browser_printer_label() -> &'static str {
 /// The most sheets a browser print takes: each is a picture held by the page until the dialog
 /// closes. Longer jobs are saved as the print-ready PDF and printed from a PDF viewer.
 pub(crate) const MAX_SHEETS: usize = 1000;
-/// The most pixels one sheet is drawn with (the Windows spooler's limit too): about A0 at 200 dpi.
-pub(crate) const MAX_SHEET_PIXELS: f64 = 64.0e6;
+/// Match the renderer's pixel budget so a planned print isn't silently downsampled again.
+pub(crate) const MAX_SHEET_PIXELS: f64 = pdfcraft_render::MAX_PIXELS as f64;
 /// The most PNG bytes one job may hold before it stops, so a long job of busy pages can't exhaust
 /// the tab's memory.
 pub(crate) const MAX_JOB_BYTES: u64 = 1 << 30;
-/// The lowest resolution a sheet is drawn at, whatever its size.
+/// Refuse sheets that cannot fit the renderer's limits at even this resolution.
 const MIN_DPI: f64 = 72.0;
 
-/// The resolution each sheet (`(width, height)` in points) is drawn at: 300 dpi for up to 100
-/// sheets, 200 up to 300 and 150 up to [`MAX_SHEETS`], lowered for a sheet that would exceed
-/// [`MAX_SHEET_PIXELS`]. Refused for no sheets, too many, or a sheet without a usable size.
+/// The resolution each sheet (`(width, height)` in points) is drawn at: 300 dpi regardless of
+/// job length, lowered only to satisfy the renderer's pixel and side limits. Refused for no
+/// sheets, too many, an unusable size, or a sheet that cannot fit at [`MIN_DPI`].
 pub(crate) fn plan_dpi(sheets: &[(f64, f64)]) -> Result<Vec<f64>, String> {
     let base: f64 = match sheets.len() {
         0 => return Err("there are no sheets to print".into()),
-        1..=100 => 300.0,
-        101..=300 => 200.0,
-        n if n <= MAX_SHEETS => 150.0,
+        n if n <= MAX_SHEETS => 300.0,
         n => {
             return Err(format!(
                 "{n} sheets are too many to print from the browser (at most {MAX_SHEETS}); save the print-ready PDF and print it from a PDF viewer"
@@ -56,9 +54,16 @@ pub(crate) fn plan_dpi(sheets: &[(f64, f64)]) -> Result<Vec<f64>, String> {
                 return Err(format!("sheet {} has no usable size", i + 1));
             }
             let square_inches = (w / 72.0) * (h / 72.0);
-            let cap = (MAX_SHEET_PIXELS / square_inches).sqrt();
-            let dpi = if cap.is_finite() { base.min(cap) } else { base };
-            Ok(dpi.max(MIN_DPI))
+            let by_area = (MAX_SHEET_PIXELS / square_inches).sqrt();
+            let by_side = f64::from(pdfcraft_render::MAX_SIDE) * 72.0 / w.max(h);
+            let dpi = base.min(by_area).min(by_side);
+            if !dpi.is_finite() || dpi < MIN_DPI {
+                return Err(format!(
+                    "sheet {} exceeds browser print limits at {MIN_DPI} dpi; save the print-ready PDF and print it from a PDF viewer",
+                    i + 1
+                ));
+            }
+            Ok(dpi)
         })
         .collect()
 }
@@ -100,7 +105,7 @@ pub(crate) fn print_document_html(sheets: &[(f64, f64)], urls: &[String]) -> Str
     let paper = sheets.first().copied().unwrap_or((612.0, 792.0));
     let (pw, ph) = (pt(paper.0), pt(paper.1));
     let mut css = format!(
-        "html,body{{margin:0;padding:0;background:#fff}}@page{{size:{pw} {ph};margin:0}}\
+        "html,body{{margin:0;padding:0;background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}}@page{{size:{pw} {ph};margin:0}}\
          div{{position:relative;overflow:hidden;margin:0;padding:0;width:{pw};height:{ph};break-after:page;page-break-after:always}}\
          div:last-child{{break-after:auto;page-break-after:auto}}img{{display:block;position:absolute;left:0;top:0;margin:0;padding:0;border:0}}\
          .turned img{{width:{ph};height:{pw};transform-origin:0 0;transform:translate(0,{ph}) rotate(-90deg)}}"
@@ -327,12 +332,12 @@ mod tests {
     const LETTER: (f64, f64) = (612.0, 792.0);
 
     #[test]
-    fn resolution_falls_with_the_sheet_count_and_long_jobs_are_refused() {
+    fn resolution_stays_sharp_regardless_of_sheet_count_and_long_jobs_are_refused() {
         assert_eq!(plan_dpi(&[LETTER]).unwrap(), vec![300.0]);
         assert_eq!(plan_dpi(&vec![LETTER; 100]).unwrap()[99], 300.0);
-        assert_eq!(plan_dpi(&vec![LETTER; 101]).unwrap()[0], 200.0);
-        assert_eq!(plan_dpi(&vec![LETTER; 300]).unwrap()[0], 200.0);
-        assert_eq!(plan_dpi(&vec![LETTER; 301]).unwrap()[0], 150.0);
+        assert_eq!(plan_dpi(&vec![LETTER; 101]).unwrap()[0], 300.0);
+        assert_eq!(plan_dpi(&vec![LETTER; 300]).unwrap()[0], 300.0);
+        assert_eq!(plan_dpi(&vec![LETTER; 301]).unwrap()[0], 300.0);
         assert_eq!(plan_dpi(&vec![LETTER; MAX_SHEETS]).unwrap().len(), MAX_SHEETS);
         let e = plan_dpi(&vec![LETTER; MAX_SHEETS + 1]).unwrap_err();
         assert!(e.contains("save the print-ready PDF"), "{e}");
@@ -346,8 +351,10 @@ mod tests {
         assert!(dpi < 300.0 && dpi > 150.0, "{dpi}");
         let pixels = (36.0 * dpi) * (48.0 * dpi);
         assert!(pixels <= MAX_SHEET_PIXELS * 1.0001, "{pixels}");
-        // A huge sheet still gets a usable floor rather than nothing.
-        assert_eq!(plan_dpi(&[(14_400.0, 14_400.0)]).unwrap()[0], MIN_DPI);
+        // Never pretend to satisfy a 72 dpi floor when the renderer would reduce it again.
+        assert!(plan_dpi(&[(14_400.0, 14_400.0)]).unwrap_err().contains("save the print-ready PDF"));
+        let narrow = plan_dpi(&[(7200.0, 72.0)]).unwrap()[0];
+        assert!((narrow - 81.92).abs() < 0.001, "the side limit applies even below the pixel budget");
         for bad in [(f64::NAN, 792.0), (612.0, f64::INFINITY), (0.0, 792.0), (-612.0, 792.0)] {
             assert!(plan_dpi(&[LETTER, bad]).unwrap_err().contains("sheet 2"));
         }
@@ -362,6 +369,8 @@ mod tests {
         // The paper is the first sheet's.
         assert!(html.contains("@page{size:612pt 792pt;margin:0}"), "{html}");
         assert_eq!(html.matches("<div").count(), 5);
+        assert!(html.contains("print-color-adjust:exact"), "preserve printed colours: {html}");
+        assert!(html.contains("-webkit-print-color-adjust:exact"), "preserve printed colours in WebKit: {html}");
         // Letter landscape is turned onto Letter portrait, not given a page of its own.
         assert!(html.contains("<div class=\"turned\"><img alt=\"\" src=\"blob:https://example.test/1\"></div>"), "{html}");
         assert!(html.contains(".turned img{width:792pt;height:612pt;transform-origin:0 0;transform:translate(0,792pt) rotate(-90deg)}"), "{html}");

@@ -15,6 +15,9 @@ use pdfcraft_render::{DestView, DocInfo, LayerOp, LinkTarget, PRINT_TAG, PageTex
 use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, QuickTool, RightPanel, comments, icons, widgets};
 
+#[path = "hand_pan.rs"]
+mod hand_pan;
+
 /// Logical pixels per PDF point at 100% (96 dpi, like browsers).
 pub const PT: f32 = 96.0 / 72.0;
 const GAP: f32 = 14.0;
@@ -2649,15 +2652,21 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         }
     };
 
+    // A modal or lost window focus terminates the page drag, not a dialog's own drag. It
+    // must not resume later with a pointer delta accumulated over printer preferences.
+    if (!unobstructed || !navigation_enabled) && view.page_widget.is_some_and(|id| ui.ctx().is_being_dragged(id)) {
+        ui.ctx().stop_dragging();
+    }
     let mut scroll = egui::ScrollArea::both().auto_shrink([false, false]).scroll_source(egui::scroll_area::ScrollSource {
-        drag: if middle_gesture {
+        drag: if middle_gesture || !unobstructed || !navigation_enabled {
             egui::scroll_area::DragScroll::Never
         } else if app.quick_tool == QuickTool::Hand {
             egui::scroll_area::DragScroll::Always
         } else {
             egui::scroll_area::DragScroll::OnTouch
         },
-        ..Default::default()
+        scroll_bar: unobstructed && navigation_enabled,
+        mouse_wheel: unobstructed && navigation_enabled,
     });
     // Each document keeps its own scroll position when switching tabs (#189).
     scroll = scroll.id_salt(("page-view", view.id));
@@ -2677,6 +2686,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // below still wins.
     if app.quick_tool == QuickTool::Hand
         && !middle_gesture
+        && unobstructed
+        && navigation_enabled
+        && ui.input(|i| i.pointer.primary_down())
         && let Some(id) = view.page_widget.filter(|id| ui.ctx().is_being_dragged(*id))
     {
         let moved = if ui.ctx().drag_started_id() == Some(id) {
@@ -2687,7 +2699,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         // Within the content, as egui keeps it: past an end the page would show there for a
         // frame and spring back. `max` is never NaN or below zero, so the clamp can't panic.
         let max = vec2((content_w - avail.width()).max(0.0), (content_h - avail.height()).max(0.0));
-        scroll = scroll.scroll_offset((view.last_scroll - moved).clamp(Vec2::ZERO, max));
+        if let Some([x, y]) = hand_pan::offset(view.last_scroll.into(), moved.into(), max.into()) {
+            scroll = scroll.scroll_offset(vec2(x, y));
+        }
     }
     if let Some(v) = view.sync_scroll.take() {
         scroll = scroll.scroll_offset(v);
@@ -2786,13 +2800,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let mut badge_hover: Option<(Pos2, String)> = None;
     // A dialog, save prompt or palette covers the page. Hover tips are drawn above those
     // windows, so a comment under the pointer would otherwise float over the dialog.
-    let page_covered = app.dialog.is_some()
-        || app.close_request.is_some()
-        || app.palette_open
-        || app.password_prompt.is_some()
-        || app.pending_link.is_some()
-        || app.pending_remote_link.is_some()
-        || app.updates.open;
+    let page_covered = !unobstructed;
     let mut clicked_link: Option<LinkTarget> = None;
     let mut remote_open: Option<(pdfcraft_engine::DocId, String, pdfcraft_render::RemoteDestination)> = None;
     let mut canvas_action: Option<comments::CanvasAction> = None;
@@ -2834,7 +2842,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let out = page_scroll(ui, scroll, egui::Id::new(("page-view-scope", view.id)), |ui, viewport| {
         // egui's drag responses accept every pointer button. Keep a wheel gesture from also
         // selecting text, drawing a mark, or panning with the Hand tool.
-        if middle_gesture {
+        if middle_gesture || !unobstructed || !navigation_enabled {
             let opacity = ui.opacity();
             ui.disable();
             // Only interactions pause; the document must keep its original colours.
@@ -2847,7 +2855,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         // until after the text widgets when a selection owns that drag.
         let wheel_delta = if selection_wheel { Vec2::ZERO } else { precise_scroll + boost_extra };
         let delta = auto_delta + edge_delta - vec2(0.0, key_scroll) + wheel_delta + glide;
-        if delta != Vec2::ZERO && delta.is_finite() {
+        if unobstructed && navigation_enabled && delta != Vec2::ZERO && delta.is_finite() {
             ui.scroll_with_delta_animation(delta, egui::style::ScrollAnimation::none());
         }
         let (resp_rect, resp) = ui.allocate_exact_size(vec2(content_w, content_h), Sense::click_and_drag());
@@ -2857,8 +2865,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             view.selection_drag = false;
         }
         // The Hand tool pans by this widget's drag, before the pages are laid out (above).
-        if hand {
-            if resp.dragged() {
+        if hand && !page_covered && navigation_enabled {
+            if resp.dragged_by(egui::PointerButton::Primary) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             } else if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -3483,9 +3491,11 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     }
                 }
             }
-            // Fill & Sign keeps its placement cursor clear of link/comment hover feedback.
+            // Hand owns the grab cursor even over a link: pointing-finger feedback (and
+            // comment popups) must not replace it while panning. Fill & Sign also keeps its
+            // placement cursor clear of link/comment hover feedback.
             if !page_covered
-                && !matches!(tool, QuickTool::Fill(_))
+                && !matches!(tool, QuickTool::Hand | QuickTool::Fill(_))
                 && let Some(p) = pointer
             {
                 for l in info.links.iter().filter(|l| l.page == i) {

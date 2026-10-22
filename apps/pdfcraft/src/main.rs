@@ -361,6 +361,27 @@ fn native_wayland(_: &eframe::CreationContext<'_>) -> bool {
     false
 }
 
+/// winit's regular window icon sets ICON_SMALL on Windows; the taskbar and Alt+Tab use
+/// ICON_BIG. Set both from the same bundled asset, without relying on the executable icon.
+#[cfg(target_os = "windows")]
+fn install_taskbar_icon(cc: &eframe::CreationContext<'_>) {
+    use winit::platform::windows::WindowExtWindows as _;
+    let Some(window) = cc.winit_window() else {
+        log::warn!("taskbar icon: native window is not available");
+        return;
+    };
+    match windows_taskbar_icon() {
+        Ok(icon) => window.set_taskbar_icon(Some(icon)),
+        Err(e) => log::warn!("taskbar icon: {e}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_taskbar_icon() -> Result<winit::window::Icon, String> {
+    let icon = eframe::icon_data::from_png_bytes(APP_ICON_PNG).map_err(|e| e.to_string())?;
+    winit::window::Icon::from_rgba(icon.rgba, icon.width, icon.height).map_err(|e| e.to_string())
+}
+
 fn app_creator<'a>(
     launch: Launch,
     started: Rc<Cell<bool>>,
@@ -370,6 +391,8 @@ fn app_creator<'a>(
     let Launch { files, options, control_file, create_images, integrated, window_controls } = launch;
     Box::new(move |cc| {
         started.set(true);
+        #[cfg(target_os = "windows")]
+        install_taskbar_icon(cc);
         let mut app = PdfCraftApp::new();
         // First start (or settings from before Units existed): the region's unit.
         app.units = pdfcraft_ui_egui::units::Unit::system();
@@ -756,6 +779,12 @@ fn pick_adapter(adapters: &[(u32, u32, eframe::wgpu::DeviceType)], displays: &[D
 #[cfg(test)]
 mod tests {
     use pdfcraft_ui_egui::control::Endpoint;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_bundled_icon_can_be_used_as_a_windows_taskbar_icon() {
+        assert!(super::windows_taskbar_icon().is_ok());
+    }
 
     fn endpoint() -> std::io::Result<Endpoint> {
         Ok(Endpoint { port: 4321, token: "0123456789abcdef".into() })

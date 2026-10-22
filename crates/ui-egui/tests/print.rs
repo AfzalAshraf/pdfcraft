@@ -426,3 +426,142 @@ fn an_empty_printer_list_says_none_were_found() {
     h.get_by_label_contains("No printers were found");
     assert!(!h.get_by_role_and_label(Role::Button, "Save as PDF").accesskit_node().is_disabled());
 }
+
+/// Keep deterministic discovery tests separate from real configured queues; these tests never
+/// submit a job to a physical printer.
+fn wait_for_printers(h: &mut Harness<'static, PdfCraftApp>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().print_draft.printers_loading && std::time::Instant::now() < deadline {
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!h.state().print_draft.printers_loading, "discovery worker completed");
+    h.run_steps(2);
+}
+
+#[test]
+fn print_reopen_keeps_explicit_queue_and_save_as_pdf_choices() {
+    use pdfcraft_engine::print::spool::Printer;
+    let mut h = harness();
+    h.state_mut().printer_source = Some(std::sync::Arc::new(|| {
+        vec![
+            Printer { name: "Default test queue".into(), default: true, two_sided: None },
+            Printer { name: "Chosen test queue".into(), default: false, two_sided: None },
+        ]
+    }));
+    assert!(h.state_mut().execute("print.dialog"));
+    wait_for_printers(&mut h);
+    {
+        let d = &mut h.state_mut().print_draft;
+        d.printer = Some("Chosen test queue".into());
+        d.printer_picked = true;
+    }
+    h.state_mut().dialog = None;
+    assert!(h.state_mut().execute("print.dialog"));
+    assert_eq!(h.state().print_draft.printer.as_deref(), Some("Chosen test queue"));
+    wait_for_printers(&mut h);
+    assert_eq!(h.state().print_draft.printer.as_deref(), Some("Chosen test queue"));
+    {
+        let d = &mut h.state_mut().print_draft;
+        d.printer = None;
+        d.printer_picked = true;
+    }
+    h.state_mut().dialog = None;
+    assert!(h.state_mut().execute("print.dialog"));
+    wait_for_printers(&mut h);
+    assert_eq!(h.state().print_draft.printer, None, "explicit Save as PDF is not replaced by a queue");
+    assert!(h.state().print_draft.printer_picked);
+}
+
+#[test]
+fn refreshed_default_does_not_reroute_a_missing_selected_queue() {
+    use pdfcraft_engine::print::spool::Printer;
+    use std::sync::{Arc, Mutex};
+    let queues = Arc::new(Mutex::new(vec![Printer { name: "Original test queue".into(), default: true, two_sided: None }]));
+    let source = queues.clone();
+    let mut h = harness();
+    h.state_mut().printer_source = Some(Arc::new(move || source.lock().unwrap().clone()));
+    assert!(h.state_mut().execute("print.dialog"));
+    wait_for_printers(&mut h);
+    assert_eq!(h.state().print_draft.printer.as_deref(), Some("Original test queue"));
+    assert!(!h.state().print_draft.printer_picked, "the original queue was automatically preselected");
+    h.state_mut().dialog = None;
+    *queues.lock().unwrap() = vec![Printer { name: "Different test queue".into(), default: true, two_sided: None }];
+    assert!(h.state_mut().execute("print.dialog"));
+    wait_for_printers(&mut h);
+    assert_eq!(h.state().print_draft.printer.as_deref(), Some("Original test queue"), "refresh cannot change a job's destination");
+    h.get_by_label_contains("The selected printer is no longer available");
+    // Assert the guard before calling print_now, so an old implementation fails without ever
+    // reaching the spooler. The test deliberately has no real queue or physical print target.
+    assert!(h.get_by_role_and_label(Role::Button, "Print").accesskit_node().is_disabled());
+    assert!(!h.state_mut().print_now(), "direct submission uses the same destination guard");
+    assert_eq!(h.state().dialog, Some(Dialog::Print));
+    assert!(!h.state().session.get(h.state().views[0].id).unwrap().dirty);
+}
+
+#[test]
+fn print_now_cannot_bypass_unresolved_discovery_to_save_a_file() {
+    let mut h = harness();
+    let id = h.state().views[0].id;
+    let before = h.state().session.get(id).unwrap().bytes.clone();
+    // A synthetic pending discovery needs no worker, network or printer to reproduce it.
+    h.state_mut().print_draft = pdfcraft_ui_egui::PrintDraft { printers_loading: true, ..Default::default() };
+    assert!(!h.state_mut().print_now());
+    assert!(h.state().toast.as_ref().is_some_and(|t| t.0.contains("Looking for printers")));
+    assert_eq!(h.state().session.get(id).unwrap().bytes, before);
+    assert!(!h.state().session.get(id).unwrap().dirty);
+}
+
+#[test]
+fn failed_discovery_is_not_reported_as_an_empty_success_and_can_be_retried() {
+    use pdfcraft_engine::print::spool::Printer;
+    let mut h = harness();
+    h.state_mut().printer_source = Some(std::sync::Arc::new(|| panic!("synthetic discovery failure")));
+    assert!(h.state_mut().execute("print.dialog"));
+    wait_for_printers(&mut h);
+    assert!(h.state().print_draft.printer_error.is_some());
+    h.get_by_label_contains("Couldn't list printers");
+    assert!(h.query_by_label_contains("No printers were found").is_none(), "a failed query is not an empty successful query");
+    h.state_mut().dialog = None;
+    h.state_mut().printer_source =
+        Some(std::sync::Arc::new(|| vec![Printer { name: "Recovered test queue".into(), default: true, two_sided: None }]));
+    assert!(h.state_mut().execute("print.dialog"));
+    wait_for_printers(&mut h);
+    assert!(h.state().print_draft.printer_error.is_none());
+    assert_eq!(h.state().print_draft.printer.as_deref(), Some("Recovered test queue"));
+}
+
+#[test]
+fn repeatedly_opening_print_does_not_spawn_replacement_discovery_workers() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::channel,
+    };
+    let mut h = harness();
+    let gate = Arc::new(Mutex::new(()));
+    let hold = gate.lock().unwrap();
+    let wait = gate.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let (entered, started) = channel();
+    h.state_mut().printer_source = Some(Arc::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        entered.send(()).unwrap();
+        let _guard = wait.lock().unwrap();
+        Vec::new()
+    }));
+    assert!(h.state_mut().execute("print.dialog"));
+    started.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    for _ in 0..5 {
+        h.state_mut().dialog = None;
+        assert!(h.state_mut().execute("print.dialog"));
+        h.run_steps(2);
+        assert!(h.state().print_draft.printers_loading);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(hold);
+    wait_for_printers(&mut h);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(h.state().print_draft.printer_error.is_none());
+}

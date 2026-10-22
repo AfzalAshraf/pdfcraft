@@ -1363,8 +1363,8 @@ fn a_middle_drag_with_a_drawing_tool_scrolls_instead_of_drawing() {
     assert!(!s.views[0].middle_panning(), "releasing the wheel ends the pan");
     let moved = s.views[0].page_screen_rect(0).expect("page 1 on screen").top();
     if cfg!(target_os = "linux") {
-        // Linux latches auto-scroll instead of panning with the drag.
-        assert!(s.views[0].auto_scrolling());
+        // Linux uses velocity scrolling while held, but a drag no longer latches on release.
+        assert!(!s.views[0].auto_scrolling(), "#3795: releasing the held drag stops scrolling");
     } else {
         assert!((moved - (top - 120.0)).abs() < 1.0, "the page follows the pointer: {top} -> {moved}");
     }

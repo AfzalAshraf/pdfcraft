@@ -1232,6 +1232,121 @@ fn the_hand_tool_moves_the_page_with_the_pointer() {
 }
 
 #[test]
+fn hand_cursor_is_grab_over_links_and_grabbing_only_during_primary_pan() {
+    let mut h = harness_stepping(1.0 / 60.0, &[("layout", "continuous"), ("zoom", "150"), ("quick", "hand")]);
+    let page = rect(&h, 0).unwrap();
+    // PAGES has a link at x=50..250, y=300..350 on its 300x400 first page.
+    let start = page.min + egui::vec2(page.width() / 2.0, page.height() * (75.0 / 400.0));
+    h.hover_at(start);
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Grab, "a PDF link cannot replace the pan cursor");
+    let id = h.state().views[0].id;
+    let before = h.state().session.get(id).unwrap().bytes.clone();
+    // A click with Hand does not follow the page-3 link.
+    h.drag_at(start);
+    h.step();
+    h.drop_at(start);
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].current, 0);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Grab);
+    h.drag_at(start);
+    h.step();
+    let moved = start - egui::vec2(25.0, 30.0);
+    h.hover_at(moved);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Grabbing);
+    h.drop_at(moved);
+    h.run_steps(3);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Grab);
+    assert!(h.state().views[0].selected_text().is_none());
+    assert_eq!(h.state().session.get(id).unwrap().bytes, before, "panning never edits the PDF");
+    assert!(!h.state().session.get(id).unwrap().dirty);
+    // Select retains its pointing-finger link feedback.
+    h.state_mut().set_option("quick", "select").unwrap();
+    h.run_steps(2);
+    let page = rect(&h, 0).unwrap();
+    h.hover_at(page.min + egui::vec2(page.width() / 2.0, page.height() * (75.0 / 400.0)));
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+}
+
+#[test]
+fn opening_print_ends_hand_drag_without_resuming_or_modifying_the_document() {
+    let mut h = harness_stepping(1.0 / 60.0, &[("layout", "continuous"), ("zoom", "600"), ("quick", "hand")]);
+    h.state_mut().printer_source = Some(std::sync::Arc::new(Vec::new));
+    let start = h.state().views[0].viewport_rect().center();
+    h.hover_at(start);
+    h.run_steps(2);
+    h.drag_at(start);
+    h.step();
+    let pointer = start - egui::vec2(40.0, 60.0);
+    h.hover_at(pointer);
+    h.step();
+    let before = rect(&h, 0).unwrap();
+    assert!(h.state_mut().execute("print.dialog"));
+    h.hover_at(pointer - egui::vec2(70.0, 80.0));
+    h.run_steps(2);
+    assert_eq!(rect(&h, 0).unwrap(), before, "the canvas does not move underneath Print");
+    h.state_mut().dialog = None;
+    h.hover_at(pointer - egui::vec2(90.0, 100.0));
+    h.run_steps(2);
+    assert_eq!(rect(&h, 0).unwrap(), before, "closing Print does not resume the old held drag");
+    h.drop_at(pointer - egui::vec2(90.0, 100.0));
+    h.run_steps(2);
+    assert_eq!(h.state().quick_tool, pdfcraft_ui_egui::QuickTool::Hand);
+    let id = h.state().views[0].id;
+    assert!(!h.state().session.get(id).unwrap().dirty);
+    // A fresh drag still works after cancellation.
+    let start = h.state().views[0].viewport_rect().center();
+    h.hover_at(start);
+    h.run_steps(2);
+    h.drag_at(start);
+    h.step();
+    h.hover_at(start - egui::vec2(20.0, 40.0));
+    h.step();
+    assert!(rect(&h, 0).unwrap().top() < before.top() - 30.0);
+    h.drop_at(start - egui::vec2(20.0, 40.0));
+    h.run_steps(2);
+}
+
+#[test]
+fn hand_pan_cannot_resume_after_losing_focus_or_switching_tabs_while_held() {
+    for lose_focus in [false, true] {
+        let mut h = harness_stepping(1.0 / 60.0, &[("layout", "continuous"), ("zoom", "600"), ("quick", "hand")]);
+        h.state_mut().open_bytes("other.pdf", None, PAGES.to_vec()).unwrap();
+        h.state_mut().active = Some(0);
+        h.run_steps(4);
+        let start = h.state().views[0].viewport_rect().center();
+        h.hover_at(start);
+        h.run_steps(2);
+        h.drag_at(start);
+        h.step();
+        let pointer = start - egui::vec2(40.0, 60.0);
+        h.hover_at(pointer);
+        h.step();
+        let before = rect(&h, 0).unwrap();
+        if lose_focus {
+            h.input_mut().focused = false;
+        } else {
+            h.state_mut().active = Some(1);
+        }
+        h.run_steps(2);
+        if lose_focus {
+            h.input_mut().focused = true;
+        } else {
+            h.state_mut().active = Some(0);
+        }
+        let end = pointer - egui::vec2(80.0, 100.0);
+        h.hover_at(end);
+        h.run_steps(2);
+        assert_eq!(rect(&h, 0).unwrap(), before, "a held drag cannot cross a focus/tab boundary: focus={lose_focus}");
+        h.drop_at(end);
+        h.run_steps(2);
+        assert_eq!(h.state().quick_tool, pdfcraft_ui_egui::QuickTool::Hand);
+    }
+}
+
+#[test]
 fn required_fields_get_a_red_border_when_highlighting() {
     let _gpu = gpu();
     let mut h = form_harness();

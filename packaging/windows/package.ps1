@@ -16,12 +16,15 @@
 
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
+  pwsh packaging/windows/package.ps1 -Arch x64 -PortableOnly
   pwsh packaging/windows/package.ps1 -Arch x86 -SkipBuild
   pwsh packaging/windows/package.ps1 -Arch arm64     # cross-compiled; needs the MSVC ARM64 build tools
 #>
 param(
   [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
-  [switch] $SkipBuild
+  [switch] $SkipBuild,
+  # Build the same self-contained portable package without installing WiX or producing an MSI.
+  [switch] $PortableOnly
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -109,19 +112,22 @@ if (-not (Test-Path (Join-Path $Models 'ATTRIBUTION.txt')) -or -not (Get-ChildIt
 }
 
 # ---- MSI ---------------------------------------------------------------------------------------
-$Msi = Join-Path $Dist "pdfcraft-$Version-windows-$Arch.msi"
-Invoke-Native 'wix build' {
-  wix build (Join-Path $PSScriptRoot 'pdfcraft.wxs') -arch $Arch `
-    (Join-Path $PSScriptRoot 'installer-ui.wxs') `
-    -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "ModelsDir=$Models" -d "IconPath=$(Join-Path $Root 'assets\app-icon\pdfcraft.ico')" `
-    -o $Msi
+if (-not $PortableOnly) {
+  $Msi = Join-Path $Dist "pdfcraft-$Version-windows-$Arch.msi"
+  Invoke-Native 'wix build' {
+    wix build (Join-Path $PSScriptRoot 'pdfcraft.wxs') -arch $Arch `
+      (Join-Path $PSScriptRoot 'installer-ui.wxs') `
+      -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "ModelsDir=$Models" -d "IconPath=$(Join-Path $Root 'assets\app-icon\pdfcraft.ico')" `
+      -o $Msi
+  }
+  # Inspect the built MSI, not just the XML, before signing/publishing it. In a child process, so
+  # its Windows Installer database handle is gone before signtool opens the MSI.
+  Invoke-Native 'test-msi' { & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'test-msi.ps1') $Msi }
+  # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
+  Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
+  & (Join-Path $PSScriptRoot 'sign.ps1') $Msi
+
 }
-# Inspect the built MSI, not just the XML, before signing/publishing it. In a child process, so
-# its Windows Installer database handle is gone before signtool opens the MSI.
-Invoke-Native 'test-msi' { & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'test-msi.ps1') $Msi }
-# wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
-Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
-& (Join-Path $PSScriptRoot 'sign.ps1') $Msi
 
 # ---- portable zip ------------------------------------------------------------------------------
 $Portable = Join-Path $TargetDir "windows-package\pdfcraft-$Version-windows-$Arch-portable"
@@ -132,10 +138,21 @@ foreach ($f in 'NOTICE', 'LICENSE-document.txt') {
   Copy-Item (Join-Path $Stage $f) $Portable
 }
 Copy-Item -Recurse $Models (Join-Path $Portable 'models')
-foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
+foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'ATTRIBUTION.md', 'ATTRIBUTION.toml') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }
 }
+# Preserve asset licence paths referenced by NOTICE / ATTRIBUTION without shipping the raw assets.
+Get-ChildItem -Path (Join-Path $Root 'assets') -Recurse -File | Where-Object {
+  $_.Name -match '^(LICENSE|LICENCE|OFL|COPYING)'
+} | ForEach-Object {
+  $relative = [IO.Path]::GetRelativePath($Root, $_.FullName)
+  $destination = Join-Path $Portable $relative
+  New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+  Copy-Item $_.FullName $destination
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $Portable 'docs\brand') | Out-Null
+Copy-Item (Join-Path $Root 'docs\brand\LICENSE-brand.txt') (Join-Path $Portable 'docs\brand')
 # Builds made with craft-fonts (CRAFT_FONTS_DIR, set for every release) embed its fonts: ship their
 # licences, fonts\<family>\OFL.txt -> OFL-<family>.txt.
 if ($env:CRAFT_FONTS_DIR) {
@@ -148,6 +165,33 @@ if ($env:CRAFT_FONTS_DIR) {
 # digital IDs go to PdfCraftData\ next to the exe instead of %APPDATA% (#157; see
 # crates/ui-egui/src/portable.rs).
 Copy-Item (Join-Path $PSScriptRoot 'portable.txt') $Portable
+# Describe the actual source revision inside the download, independent of the ZIP filename.
+@{
+  version = $Version
+  commit = $env:PDFCRAFT_BUILD_SHA
+  build_date_utc = $env:PDFCRAFT_BUILD_DATE
+  label = $env:PDFCRAFT_BUILD_LABEL
+  target = $Target
+  craft_fonts_commit = if ($env:CRAFT_FONTS_DIR) { git -C $env:CRAFT_FONTS_DIR rev-parse HEAD } else { $null }
+} | ConvertTo-Json | Set-Content (Join-Path $Portable 'BUILD-INFO.json') -Encoding utf8
+@'
+PdfCraft portable
+=================
+1. Close any older running copy of PdfCraft.
+2. Extract the entire ZIP to a writable folder (not Program Files).
+3. Open that folder and double-click pdfcraft.exe. Do not run it from inside the ZIP.
+
+Keep portable.txt, models and the licence files beside the executable. Settings, logs,
+recovery files and new digital IDs are kept in PdfCraftData beside it when writable.
+If that folder is read-only, the app reports a fallback to per-user settings.
+This does not uninstall or update an existing installed version.
+
+No Rust, PowerShell, administrator access or separate VC++ runtime install is needed
+just to run this portable copy. BUILD-INFO.json identifies its source revision.
+A portable-preview build is an unsigned test build, not an official upstream release.
+Windows may warn about unsigned downloads. Do not disable security software.
+Use copies of important PDFs; GUI, performance and physical-printer acceptance are manual.
+'@ | Set-Content (Join-Path $Portable 'README-PORTABLE.txt') -Encoding utf8
 $Zip = Join-Path $Dist "pdfcraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
@@ -160,4 +204,8 @@ if ($Arch -ne 'arm64' -or $HostArch -eq 'arm64') {
 } else {
   Write-Output "skipping pdfcraft-cli --version: an $Arch build doesn't run on this $HostArch machine"
 }
-Get-Item $Msi, $Zip | Format-Table Name, Length
+if ($PortableOnly) {
+  Get-Item $Zip | Format-Table -Property @('Name', 'Length')
+} else {
+  Get-Item $Msi, $Zip | Format-Table -Property @('Name', 'Length')
+}

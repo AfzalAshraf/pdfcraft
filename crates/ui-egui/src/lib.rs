@@ -3096,6 +3096,11 @@ impl eframe::App for PdfCraftApp {
             view.objects.set_input_blocked(blocked || self.active != Some(index));
             if blocked || self.active != Some(index) {
                 view.auto_scroll.cancel();
+                // A Hand/text drag belongs to this canvas, not to the tab or dialog that
+                // just took focus. Clear it even while the old document isn't being drawn.
+                if view.page_widget.is_some_and(|id| ctx.is_being_dragged(id)) {
+                    ctx.stop_dragging();
+                }
             }
         }
         // A field that refused its value this frame keeps the shortcut from saving or printing

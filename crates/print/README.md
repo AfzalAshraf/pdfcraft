@@ -75,3 +75,9 @@ a matching page. On Windows craft-print sends the sheets as vectors with a Print
 for the sheet's exact paper and no scaling (#599's approach), validated by the driver:
 a job is refused, not shrunk, when the driver lacks the paper or would change it. Verify
 the driver's paper settings and physical calibration before relying on drawing scale.
+
+## Print quality validation
+
+See [print-quality notes and verification plan](../../docs/print-quality.md) for the
+image-print geometry and browser-quality candidates, their safety limits and the outstanding
+Windows Canon PrintTicket failure. These changes do not replace printer-driver calibration.

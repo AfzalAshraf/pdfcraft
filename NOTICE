@@ -3,9 +3,8 @@ Copyright (c) 2026 ArtCraft Team and the PdfCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
 (LICENSE-MIT, LICENSE-APACHE).
 
-The ArtCraft name, wordmark and logos in docs/brand/ are trademarks of the ArtCraft Team. They are
-not open source and are not covered by the license above; their terms are in
-docs/brand/LICENSE-brand.txt.
+The upstream ArtCraft trademark artwork is omitted from this modified fork. Trademark terms
+are preserved in docs/brand/LICENSE-brand.txt. This fork is not an official upstream release.
 
 Third-party material
 

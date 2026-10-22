@@ -9,6 +9,12 @@ use pdfcraft_engine::print::{self, Binding, BookletSubset, Content, Layout, Orie
 use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, widgets};
 
+#[path = "print_destination.rs"]
+mod destination;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "print_discovery.rs"]
+mod discovery;
+
 /// The preview pane, and the paper inside it (12 pt inset on each side).
 const PREVIEW_W: f32 = 320.0;
 const PREVIEW_H: f32 = 380.0;
@@ -44,6 +50,8 @@ pub struct PrintDraft {
     pub units: crate::units::Unit,
     /// The printers are still being listed in the background (see [`PrinterSource`]).
     pub printers_loading: bool,
+    /// The discovery worker failed, distinct from successfully finding no configured queues.
+    pub printer_error: Option<String>,
     /// The user chose the printer, so a list arriving late doesn't move it to the default.
     pub printer_picked: bool,
     /// `None` = Save as PDF.
@@ -101,6 +109,7 @@ impl Default for PrintDraft {
             printers: Vec::new(),
             units: Default::default(),
             printers_loading: false,
+            printer_error: None,
             printer_picked: false,
             printer: None,
             copies: 1,
@@ -188,6 +197,17 @@ impl PrintDraft {
         })
     }
 
+    /// Shared by the button and `print_now`: direct/control callers cannot bypass a pending
+    /// or missing destination simply because they did not click the disabled button.
+    fn destination_error(&self) -> Option<&'static str> {
+        destination::validate(self.printer.as_deref(), self.printer_picked, self.printers_loading, self.printers.iter().map(|p| p.name.as_str()))
+            .err()
+            .map(|e| match e {
+                destination::DestinationError::Loading => tl!("Looking for printers…"),
+                destination::DestinationError::Missing => tl!("The selected printer is no longer available. Choose a printer or Save as PDF."),
+            })
+    }
+
     pub fn job(&self, title: &str) -> spool::Job {
         spool::Job {
             printer: self.printer.clone(),
@@ -225,7 +245,7 @@ pub fn system_printers() -> PrinterSource {
 #[derive(Default)]
 pub(crate) struct PrintTasks {
     #[cfg(not(target_arch = "wasm32"))]
-    printers: Option<std::sync::mpsc::Receiver<Vec<spool::Printer>>>,
+    printers: Option<std::sync::mpsc::Receiver<Result<Vec<spool::Printer>, discovery::DiscoveryError>>>,
     #[cfg(not(target_arch = "wasm32"))]
     jobs: Vec<PrintJob>,
     /// The progress card is showing a print job (it is shared with other long jobs).
@@ -292,14 +312,14 @@ fn default_printer(printers: &[spool::Printer]) -> Option<String> {
 impl PdfCraftApp {
     pub fn open_print(&mut self) {
         let Some((i, _)) = self.active_ids() else { return };
-        let (printers, printers_loading) = match self.printer_source.clone() {
+        let (printers, printers_loading, printer_error) = match self.printer_source.clone() {
             // The list from the last time the dialog opened, until the fresh one arrives.
             #[cfg(not(target_arch = "wasm32"))]
             Some(source) => {
-                self.list_printers_in_background(source);
-                (self.print_draft.printers.clone(), true)
+                let error = self.list_printers_in_background(source).err().map(|e| e.to_string());
+                (self.print_draft.printers.clone(), error.is_none(), error)
             }
-            _ => (listed_printers(), false),
+            _ => (listed_printers(), false, None),
         };
         let default = default_printer(&printers);
         let current = self.views[i].current;
@@ -317,9 +337,10 @@ impl PdfCraftApp {
             crop_pages: None,
             printers,
             printers_loading,
-            printer_picked: false,
+            printer_error,
+            printer_picked: keep.printer_picked,
             units: self.units,
-            printer: default,
+            printer: destination::choose(keep.printer.clone(), keep.printer_picked, default),
             current_page: current,
             sheet: 0,
             selected,
@@ -374,21 +395,22 @@ impl PdfCraftApp {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn list_printers_in_background(&mut self, source: PrinterSource) {
-        // A list already being read is as fresh as a new one would be.
+    fn list_printers_in_background(&mut self, source: PrinterSource) -> std::io::Result<()> {
+        // A list already being read is as fresh as a new one would be. In particular, don't
+        // try to "cancel" a stuck driver call by leaking another native thread on every open.
         if self.print_tasks.printers.is_some() {
-            return;
+            return Ok(());
         }
-        let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            // The receiver may be gone (the app quit): nothing to report to then.
-            let _ = tx.send(source());
-            if let Some(ctx) = ctx {
-                ctx.request_repaint();
-            }
-        });
-        self.print_tasks.printers = Some(rx);
+        self.print_tasks.printers = Some(discovery::start(
+            move || source(),
+            move || {
+                if let Some(ctx) = ctx {
+                    ctx.request_repaint();
+                }
+            },
+        )?);
+        Ok(())
     }
 
     /// Pick up a printer list or a spooled job that finished (each frame).
@@ -398,20 +420,27 @@ impl PdfCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if let Some(rx) = &self.print_tasks.printers {
-                let printers = match rx.try_recv() {
+                let result = match rx.try_recv() {
                     Ok(p) => Some(p),
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                    // A source that died lists nothing new; the dialog keeps what it has.
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(self.print_draft.printers.clone()),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(discovery::DiscoveryError::Stopped)),
                 };
-                if let Some(printers) = printers {
+                if let Some(result) = result {
                     self.print_tasks.printers = None;
                     let d = &mut self.print_draft;
-                    if !d.printer_picked {
-                        d.printer = default_printer(&printers);
-                    }
-                    d.printers = printers;
                     d.printers_loading = false;
+                    match result {
+                        Ok(printers) => {
+                            d.printer = destination::choose(d.printer.take(), d.printer_picked, default_printer(&printers));
+                            d.printers = printers;
+                            d.printer_error = None;
+                        }
+                        Err(discovery::DiscoveryError::Stopped) => {
+                            // Keep the cached destinations, but never present a failed query as
+                            // a successful empty list. Reopening can safely retry the worker.
+                            d.printer_error = Some("Printer discovery stopped unexpectedly. Open Print again to retry.".into());
+                        }
+                    }
                 }
             }
             let mut finished = Vec::new();
@@ -484,6 +513,10 @@ impl PdfCraftApp {
     /// a preset path returns `true` once the save picker is showing; the file is written on a
     /// later frame, when the user has chosen where.
     pub fn print_now(&mut self) -> bool {
+        if let Some(error) = self.print_draft.destination_error() {
+            self.notify_tr(error);
+            return false;
+        }
         // What's typed in a form field is part of what's printed (#166).
         if !self.commit_form_typing() {
             return false;
@@ -847,7 +880,9 @@ pub(crate) fn body(
                     } else {
                         tl!("The printer driver's own settings for this print: paper tray, paper type, finishing and more.")
                     };
-                    let properties = ui.add_enabled(d.printer.is_some() && !browser, egui::Button::new(tl!("Properties…"))).on_hover_text(tip);
+                    let properties = ui
+                        .add_enabled(d.printer.is_some() && !browser && d.destination_error().is_none(), egui::Button::new(tl!("Properties…")))
+                        .on_hover_text(tip);
                     if properties.clicked()
                         && let Some(p) = d.printer.clone()
                     {
@@ -870,13 +905,27 @@ pub(crate) fn body(
                 ui.end_row();
                 // The spooler answered with no printer at all (#160): say so, rather than
                 // leaving Save as PDF looking like the only thing PdfCraft can do.
-                if !d.printers_loading && d.printers.is_empty() {
+                if !d.printers_loading && d.printers.is_empty() && d.printer_error.is_none() {
                     ui.label("");
                     ui.label(
                         egui::RichText::new(tl!("No printers were found. Check that the printer is installed and the print spooler is running, then open Print again."))
                             .small()
                             .color(t.text_muted),
                     );
+                    ui.end_row();
+                }
+                if let Some(error) = &d.printer_error {
+                    ui.label("");
+                    ui.label(
+                        egui::RichText::new(crate::i18n::fmt(tl!("Couldn't list printers: {e}"), &[("e", &crate::i18n::words(error))]))
+                            .small()
+                            .color(t.text_muted),
+                    );
+                    ui.end_row();
+                }
+                if let Some(error) = d.destination_error().filter(|_| d.printer.is_some()) {
+                    ui.label("");
+                    ui.label(egui::RichText::new(error).small().color(t.text_muted));
                     ui.end_row();
                 }
                 ui.label(tl!("Copies:"));
@@ -1230,7 +1279,11 @@ pub(crate) fn body(
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let looking = still_looking(d);
         let label = if d.printer.is_some() || looking { tl!("Print") } else { tl!("Save as PDF") };
-        if ui.add_enabled_ui(settings.is_ok() && !sheets.is_empty() && !looking, |ui| widgets::pill_button(ui, label, true)).inner.clicked() {
+        if ui
+            .add_enabled_ui(settings.is_ok() && !sheets.is_empty() && d.destination_error().is_none(), |ui| widgets::pill_button(ui, label, true))
+            .inner
+            .clicked()
+        {
             go = true;
         }
         if widgets::pill_button(ui, tl!("Cancel"), false).clicked() {

@@ -17,6 +17,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  offline-policy:
+    # Deliberately separate from the real workspace gates below: this job checks only
+    # dependency-free production policies, without contacting a Cargo registry.
+    name: offline production policies (not an app build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Format standalone entry point
+        run: rustfmt --edition 2024 --check tools/offline-tests.rs
+      - name: Check and run actual production policies without Cargo
+        env:
+          CLIPPY_CONF_DIR: ${{ github.workspace }}
+        run: |
+          clippy-driver --edition 2024 --test tools/offline-tests.rs -D warnings -o "$RUNNER_TEMP/pdfcraft-offline-tests"
+          # Catch accidental loss of a module or an empty test harness, not just test failures.
+          test "$("$RUNNER_TEMP/pdfcraft-offline-tests" --list | grep -c ': test$')" -ge 20
+          "$RUNNER_TEMP/pdfcraft-offline-tests"
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

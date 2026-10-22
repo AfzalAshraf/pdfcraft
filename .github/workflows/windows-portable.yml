@@ -1,0 +1,161 @@
+name: Windows portable preview
+
+on:
+  push:
+    branches: [main, arena/7534c8f4-pdfcraft]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Check and package Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      PDFCRAFT_REQUIRE_WINRES: '1'
+      PDFCRAFT_BUILD_SHA: ${{ github.sha }}
+      PDFCRAFT_BUILD_LABEL: portable-preview-${{ github.sha }}
+      # Static CRT: no separate Visual C++ runtime installation for the portable executable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'
+    steps:
+      - name: Check out the triggering revision (never substitute main)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check out approved font build input (gitignored)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
+          path: craft-fonts
+          persist-credentials: false
+
+      - name: Configure fonts and build identity
+        run: |
+          "CRAFT_FONTS_DIR=$env:GITHUB_WORKSPACE/craft-fonts" >> $env:GITHUB_ENV
+          'CRAFT_FONTS_REQUIRED=1' >> $env:GITHUB_ENV
+          "PDFCRAFT_BUILD_DATE=$([DateTime]::UtcNow.ToString('yyyy-MM-dd'))" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown, x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-portable-static-crt
+
+      - name: Validate packaging PowerShell syntax with the native parser
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$env:GITHUB_WORKSPACE/packaging/windows/package.ps1",
+            [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+
+      # Separate steps ensure a failed native command cannot be hidden by a later success.
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Workspace tests (including UI regressions and portable mode)
+        run: cargo test --locked --workspace
+      - name: Layer boundaries
+        run: cargo xtask layers
+      - name: Asset policy
+        run: cargo xtask assets
+      - name: Web compatibility
+        run: cargo xtask wasm
+
+      - name: Build portable ZIP (no installer, signing secrets or WiX required)
+        run: |
+          & "$env:GITHUB_WORKSPACE/packaging/windows/package.ps1" -Arch x64 -PortableOnly
+
+      - name: Verify ZIP contents and record checksum
+        run: |
+          $zips = @(Get-ChildItem dist/release/*-windows-x64-portable.zip)
+          if ($zips.Count -ne 1) { throw 'Expected exactly one portable ZIP' }
+          $zip = $zips[0]
+          $expanded = Join-Path $env:RUNNER_TEMP 'portable-verification'
+          Expand-Archive $zip.FullName $expanded
+          $folders = @(Get-ChildItem $expanded -Directory)
+          if ($folders.Count -ne 1) { throw 'Expected a single application folder' }
+          $app = $folders[0].FullName
+          foreach ($file in @('pdfcraft.exe', 'pdfcraft-cli.exe', 'portable.txt', 'BUILD-INFO.json', 'README-PORTABLE.txt', 'NOTICE', 'LICENSE-MIT', 'LICENSE-APACHE', 'models/ATTRIBUTION.txt')) {
+            if (-not (Test-Path (Join-Path $app $file) -PathType Leaf)) { throw "Missing $file" }
+          }
+          $info = Get-Content (Join-Path $app 'BUILD-INFO.json') -Raw | ConvertFrom-Json
+          if ($info.commit -ne $env:GITHUB_SHA) { throw 'Packaged revision differs from workflow revision' }
+          & (Join-Path $app 'pdfcraft-cli.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted portable CLI failed' }
+          $shortSha = $env:GITHUB_SHA.Substring(0, 12)
+          $name = $zip.BaseName + "-$shortSha.zip"
+          Rename-Item $zip.FullName $name
+          $final = Join-Path $zip.DirectoryName $name
+          $hash = (Get-FileHash $final -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content "$final.sha256" -Encoding ascii
+          "Verified portable ZIP: $name (unsigned preview; physical printing and GUI acceptance remain manual)." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Save download even if release publication is unavailable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x64-portable-${{ github.sha }}
+          path: |
+            dist/release/*-portable-*.zip
+            dist/release/*-portable-*.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  publish:
+    name: Publish unsigned preview download
+    needs: build
+    if: github.repository == 'AfzalAshraf/pdfcraft'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: windows-x64-portable-${{ github.sha }}
+          path: dist
+      - name: Create prerelease with direct ZIP download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check *.sha256
+          tag="portable-preview-${BUILD_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cat > notes.md <<EOF
+          Unsigned Windows x64 preview, built from commit ${BUILD_SHA}.
+
+          Download the portable ZIP below, choose **Extract All**, then open the extracted folder and double-click **pdfcraft.exe**. Keep portable.txt beside it. No Rust, PowerShell, installer, or administrator access is needed to run it. Close the old PdfCraft first. Use a writable folder, not Program Files.
+
+          Settings and recovery data stay in PdfCraftData beside the executable when that folder is writable. This does not replace or upgrade your installed version. Use copies of important PDFs when testing.
+
+          This preview passed the automated gates in [its build run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}); that does not certify GUI behavior, performance or physical-printer output. In particular, Kyocera/Canon acceptance remains outstanding. The binaries are unsigned; Windows may warn. Do not disable security software. SHA-256 checksums are provided for download integrity, not a substitute for code signing.
+          EOF
+          url=$(gh release create "$tag" ./*.zip ./*.sha256 --target "$BUILD_SHA" --prerelease --latest=false --title "Windows portable preview ${BUILD_SHA:0:12}" --notes-file notes.md)
+          printf '### Portable download\n\n%s\n' "$url" >> "$GITHUB_STEP_SUMMARY"
